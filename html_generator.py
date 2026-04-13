@@ -320,6 +320,16 @@ def generate_html(
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
+        # If the file already exists, ensure it is writable before opening it.
+        # Windows (antivirus, OneDrive, Controlled Folder Access) can silently
+        # mark files read-only after the first write.
+        if os.path.exists(output_path):
+            try:
+                import stat
+                os.chmod(output_path, stat.S_IWRITE | stat.S_IREAD)
+            except OSError:
+                pass  # Best effort — try the write anyway
+
         # Write by opening the file directly — same approach SQLite uses for
         # the database. This modifies the existing file in place rather than
         # deleting and recreating it, so it only needs "write to existing file"
