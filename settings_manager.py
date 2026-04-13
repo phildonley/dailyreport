@@ -211,17 +211,30 @@ class SettingsDialog(tk.Toplevel):
     # ── Actions ───────────────────────────────────────────────────────────────────
 
     def _browse_db(self):
-        # asksaveasfilename lets the user type a new filename (e.g. worklog.db)
-        # even if the file doesn't exist yet.  The app will create it on connect.
-        path = filedialog.asksaveasfilename(
-            title="Select or create WorkLog database file",
+        path = filedialog.askopenfilename(
+            title="Select WorkLog database file",
             filetypes=[("SQLite database", "*.db"), ("All files", "*.*")],
-            defaultextension=".db",
-            initialfile="worklog.db",
         )
-        if path:
+        if not path:
+            return  # User cancelled
+
+        if os.path.isfile(path):
+            # Existing file selected — use it directly
             self._db_var.set(path)
-            log.debug("DB path chosen: %s", path)
+            log.debug("DB path chosen (existing): %s", path)
+        else:
+            # User typed a name that doesn't exist yet
+            answer = messagebox.askyesno(
+                "Database Not Found",
+                f"No database file was found at:\n{path}\n\n"
+                "Would you like to create a new database here?\n\n"
+                "Click No to browse a different folder.",
+                parent=self,
+            )
+            if answer:
+                self._db_var.set(path)
+                log.debug("DB path chosen (new): %s", path)
+            # If No: dialog closes, Browse button is still available to try again
 
     def _browse_html(self):
         path = filedialog.asksaveasfilename(
