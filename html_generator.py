@@ -320,22 +320,38 @@ def generate_html(
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
-        # If the file already exists, ensure it is writable before opening it.
-        # Windows (antivirus, OneDrive, Controlled Folder Access) can silently
-        # mark files read-only after the first write.
+        import time
+
+        # On network drives, modifying an existing file may be denied even
+        # when creating new files is allowed. The reliable approach is:
+        # delete the old file, wait briefly for the network to commit the
+        # deletion, then create a fresh file.
         if os.path.exists(output_path):
             try:
-                import stat
-                os.chmod(output_path, stat.S_IWRITE | stat.S_IREAD)
-            except OSError:
-                pass  # Best effort — try the write anyway
+                os.remove(output_path)
+                log.debug("Deleted old HTML file, waiting for network to commit...")
+            except OSError as exc:
+                log.error("Could not delete old HTML file: %s", exc)
+                return False
 
-        # Write by opening the file directly — same approach SQLite uses for
-        # the database. This modifies the existing file in place rather than
-        # deleting and recreating it, so it only needs "write to existing file"
-        # permission, not "create new file" permission.
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
+        # Retry loop — network drives can take a moment to reflect the deletion.
+        # We try up to 5 times with increasing waits (0.2s, 0.4s, 0.6s, 0.8s, 1.0s).
+        last_exc = None
+        for attempt in range(5):
+            try:
+                with open(output_path, "w", encoding="utf-8") as f:
+                    f.write(html_content)
+                last_exc = None
+                break  # Success
+            except OSError as exc:
+                last_exc = exc
+                wait = 0.2 * (attempt + 1)
+                log.warning("Create attempt %d failed, retrying in %.1fs: %s",
+                            attempt + 1, wait, exc)
+                time.sleep(wait)
+
+        if last_exc:
+            raise last_exc
 
         log.info("HTML report written successfully.")
         return True
