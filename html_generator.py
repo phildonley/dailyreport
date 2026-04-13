@@ -315,25 +315,42 @@ def generate_html(
     try:
         html_content = _build_html(entries, author_name, author_team, author_org)
 
-        # Ensure the output directory exists (creates it if missing)
+        # Ensure the output directory exists
         output_dir = os.path.dirname(output_path)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
-        # Try atomic write first (temp file + rename)
-        # Falls back to direct write if the rename fails (e.g. file open in browser on Windows)
+        # If the file already exists, remove any read-only attribute before writing.
+        # This handles cases where antivirus, OneDrive, or Windows sets the file
+        # read-only after the first write.
+        if os.path.exists(output_path):
+            try:
+                import stat
+                os.chmod(output_path, stat.S_IWRITE | stat.S_IREAD)
+                log.debug("Cleared read-only attribute on %s", output_path)
+            except OSError as exc:
+                log.warning("Could not clear read-only attribute: %s", exc)
+
+        # Also clear any leftover .tmp file from a previous failed attempt
         tmp_path = output_path + ".tmp"
+        if os.path.exists(tmp_path):
+            try:
+                import stat
+                os.chmod(tmp_path, stat.S_IWRITE | stat.S_IREAD)
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+        # Try atomic write (temp + rename), fall back to direct write
         try:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 f.write(html_content)
             os.replace(tmp_path, output_path)
             log.info("HTML report written (atomic).")
         except OSError:
-            # Fallback: write directly to the output file
             log.warning("Atomic write failed; writing directly to %s", output_path)
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(html_content)
-            # Clean up temp file if it exists
             try:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
