@@ -320,42 +320,12 @@ def generate_html(
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
-        # Clean up any leftover .tmp from a previous failed attempt
-        tmp_path = output_path + ".tmp"
-        for stale in (tmp_path,):
-            if os.path.exists(stale):
-                try:
-                    os.remove(stale)
-                except OSError:
-                    pass
-
-        # Delete the existing HTML file before writing the new one.
-        # This is more reliable than overwriting because it releases any
-        # OS-level locks on the old file (antivirus, sync agents, etc.)
-        # and lets us create a completely fresh file.
-        if os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-                log.debug("Deleted old HTML file before rewrite.")
-            except OSError as exc:
-                # If we can't delete it, we can't write either — report now
-                # rather than getting a confusing error later.
-                log.error("Could not delete old HTML file: %s", exc)
-                return False
-
-        # Write the new file
-        try:
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write(html_content)
-        except PermissionError:
-            msg = (
-                "Permission denied creating the HTML file.\n"
-                "The folder does not allow new files to be created here.\n"
-                "Fix: change the HTML output path in Settings to a folder "
-                "you own, such as your Desktop or Documents folder."
-            )
-            log.error(msg)
-            raise OSError(msg)
+        # Write by opening the file directly — same approach SQLite uses for
+        # the database. This modifies the existing file in place rather than
+        # deleting and recreating it, so it only needs "write to existing file"
+        # permission, not "create new file" permission.
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
 
         log.info("HTML report written successfully.")
         return True
