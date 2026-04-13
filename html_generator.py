@@ -344,8 +344,18 @@ def generate_html(
                 return False
 
         # Write the new file
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
+        try:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(html_content)
+        except PermissionError:
+            msg = (
+                "Permission denied creating the HTML file.\n"
+                "The folder does not allow new files to be created here.\n"
+                "Fix: change the HTML output path in Settings to a folder "
+                "you own, such as your Desktop or Documents folder."
+            )
+            log.error(msg)
+            raise OSError(msg)
 
         log.info("HTML report written successfully.")
         return True
