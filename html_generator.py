@@ -320,44 +320,34 @@ def generate_html(
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
-        # If the file already exists, remove any read-only attribute before writing.
-        # This handles cases where antivirus, OneDrive, or Windows sets the file
-        # read-only after the first write.
+        # Clean up any leftover .tmp from a previous failed attempt
+        tmp_path = output_path + ".tmp"
+        for stale in (tmp_path,):
+            if os.path.exists(stale):
+                try:
+                    os.remove(stale)
+                except OSError:
+                    pass
+
+        # Delete the existing HTML file before writing the new one.
+        # This is more reliable than overwriting because it releases any
+        # OS-level locks on the old file (antivirus, sync agents, etc.)
+        # and lets us create a completely fresh file.
         if os.path.exists(output_path):
             try:
-                import stat
-                os.chmod(output_path, stat.S_IWRITE | stat.S_IREAD)
-                log.debug("Cleared read-only attribute on %s", output_path)
+                os.remove(output_path)
+                log.debug("Deleted old HTML file before rewrite.")
             except OSError as exc:
-                log.warning("Could not clear read-only attribute: %s", exc)
+                # If we can't delete it, we can't write either — report now
+                # rather than getting a confusing error later.
+                log.error("Could not delete old HTML file: %s", exc)
+                return False
 
-        # Also clear any leftover .tmp file from a previous failed attempt
-        tmp_path = output_path + ".tmp"
-        if os.path.exists(tmp_path):
-            try:
-                import stat
-                os.chmod(tmp_path, stat.S_IWRITE | stat.S_IREAD)
-                os.remove(tmp_path)
-            except OSError:
-                pass
+        # Write the new file
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
 
-        # Try atomic write (temp + rename), fall back to direct write
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(html_content)
-            os.replace(tmp_path, output_path)
-            log.info("HTML report written (atomic).")
-        except OSError:
-            log.warning("Atomic write failed; writing directly to %s", output_path)
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write(html_content)
-            try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
-            log.info("HTML report written (direct).")
-
+        log.info("HTML report written successfully.")
         return True
 
     except OSError as exc:
