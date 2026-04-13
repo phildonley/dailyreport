@@ -211,9 +211,12 @@ class SettingsDialog(tk.Toplevel):
     # ── Actions ───────────────────────────────────────────────────────────────────
 
     def _browse_db(self):
-        path = filedialog.askopenfilename(
-            title="Select WorkLog database file",
+        # asksaveasfilename lets the user type a new filename (e.g. worklog.db)
+        # even if the file doesn't exist yet.  The app will create it on connect.
+        path = filedialog.asksaveasfilename(
+            title="Select or create WorkLog database file",
             filetypes=[("SQLite database", "*.db"), ("All files", "*.*")],
+            defaultextension=".db",
             initialfile="worklog.db",
         )
         if path:
