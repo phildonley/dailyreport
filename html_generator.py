@@ -322,30 +322,30 @@ def generate_html(
 
         import time
 
-        # On network drives, modifying an existing file may be denied even
-        # when creating new files is allowed. The reliable approach is:
-        # delete the old file, wait briefly for the network to commit the
-        # deletion, then create a fresh file.
-        if os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-                log.debug("Deleted old HTML file, waiting for network to commit...")
-            except OSError as exc:
-                log.error("Could not delete old HTML file: %s", exc)
-                return False
+        # On network drives os.path.exists() can return a stale cached result,
+        # causing the delete to be skipped while the file is still present.
+        # Solution: always attempt the delete unconditionally.
+        try:
+            os.remove(output_path)
+            log.debug("Deleted existing HTML file.")
+            time.sleep(0.3)   # Give the network drive time to commit the deletion
+        except FileNotFoundError:
+            pass  # File wasn't there — fine, just create it fresh
+        except OSError as exc:
+            log.error("Could not delete HTML file: %s", exc)
+            return False
 
         # Retry loop — network drives can take a moment to reflect the deletion.
-        # We try up to 5 times with increasing waits (0.2s, 0.4s, 0.6s, 0.8s, 1.0s).
         last_exc = None
         for attempt in range(5):
             try:
                 with open(output_path, "w", encoding="utf-8") as f:
                     f.write(html_content)
                 last_exc = None
-                break  # Success
+                break
             except OSError as exc:
                 last_exc = exc
-                wait = 0.2 * (attempt + 1)
+                wait = 0.3 * (attempt + 1)
                 log.warning("Create attempt %d failed, retrying in %.1fs: %s",
                             attempt + 1, wait, exc)
                 time.sleep(wait)
