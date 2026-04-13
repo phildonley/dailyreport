@@ -214,11 +214,27 @@ class SettingsDialog(tk.Toplevel):
         path = filedialog.askopenfilename(
             title="Select WorkLog database file",
             filetypes=[("SQLite database", "*.db"), ("All files", "*.*")],
-            initialfile="worklog.db",
         )
-        if path:
+        if not path:
+            return  # User cancelled
+
+        if os.path.isfile(path):
+            # Existing file selected — use it directly
             self._db_var.set(path)
-            log.debug("DB path chosen: %s", path)
+            log.debug("DB path chosen (existing): %s", path)
+        else:
+            # User typed a name that doesn't exist yet
+            answer = messagebox.askyesno(
+                "Database Not Found",
+                f"No database file was found at:\n{path}\n\n"
+                "Would you like to create a new database here?\n\n"
+                "Click No to browse a different folder.",
+                parent=self,
+            )
+            if answer:
+                self._db_var.set(path)
+                log.debug("DB path chosen (new): %s", path)
+            # If No: dialog closes, Browse button is still available to try again
 
     def _browse_html(self):
         path = filedialog.asksaveasfilename(
