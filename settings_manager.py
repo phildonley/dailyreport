@@ -118,28 +118,36 @@ class SettingsDialog(tk.Toplevel):
         self._section_label(outer, "Database File", row=0)
 
         self._db_var = tk.StringVar(value=self._config.get("db_path", ""))
-        db_row = ttk.Frame(outer)
-        db_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 10))
-        ttk.Entry(db_row, textvariable=self._db_var, width=54).pack(
+        db_entry_row = ttk.Frame(outer)
+        db_entry_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 4))
+        ttk.Entry(db_entry_row, textvariable=self._db_var, width=54).pack(
             side="left", fill="x", expand=True
         )
-        ttk.Button(db_row, text="Browse…", command=self._browse_db).pack(
-            side="left", padx=(6, 0)
-        )
+
+        db_btn_row = ttk.Frame(outer)
+        db_btn_row.grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ttk.Button(
+            db_btn_row, text="Create New Database…",
+            command=self._create_new_db, width=22
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            db_btn_row, text="Open Existing Database…",
+            command=self._open_existing_db, width=24
+        ).pack(side="left")
 
         ttk.Label(
             outer,
-            text="If the file does not exist you will be prompted to create it.",
+            text="Use 'Create New' the first time. Use 'Open Existing' to connect to a database you already have.",
             foreground="#777",
             font=("", 8),
-        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=2, pady=(0, 8))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=2, pady=(0, 10))
 
         # ── Section: HTML output ─────────────────────────────────────────────────
-        self._section_label(outer, "HTML Report Output File", row=3)
+        self._section_label(outer, "HTML Report Output File", row=4)
 
         self._html_var = tk.StringVar(value=self._config.get("html_path", ""))
         html_row = ttk.Frame(outer)
-        html_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(2, 10))
+        html_row.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(2, 4))
         ttk.Entry(html_row, textvariable=self._html_var, width=54).pack(
             side="left", fill="x", expand=True
         )
@@ -152,19 +160,19 @@ class SettingsDialog(tk.Toplevel):
             text="The report is regenerated automatically every time you save an entry.",
             foreground="#777",
             font=("", 8),
-        ).grid(row=5, column=0, columnspan=2, sticky="w", padx=2, pady=(0, 8))
+        ).grid(row=6, column=0, columnspan=2, sticky="w", padx=2, pady=(0, 8))
 
         # ── Section: Branding ────────────────────────────────────────────────────
         ttk.Separator(outer, orient="horizontal").grid(
-            row=6, column=0, columnspan=2, sticky="ew", pady=8
+            row=7, column=0, columnspan=2, sticky="ew", pady=8
         )
-        self._section_label(outer, "HTML Report Branding", row=7)
+        self._section_label(outer, "HTML Report Branding", row=8)
         ttk.Label(
             outer,
             text="These values appear in the report header shared with your manager.",
             foreground="#777",
             font=("", 8),
-        ).grid(row=8, column=0, columnspan=2, sticky="w", padx=2, pady=(0, 6))
+        ).grid(row=9, column=0, columnspan=2, sticky="w", padx=2, pady=(0, 6))
 
         self._author_name_var = tk.StringVar(value=self._config.get("author_name", ""))
         self._author_team_var = tk.StringVar(value=self._config.get("author_team", ""))
@@ -176,15 +184,15 @@ class SettingsDialog(tk.Toplevel):
             ("Organization:",  self._author_org_var),
         ]):
             ttk.Label(outer, text=label_text).grid(
-                row=9 + row_i, column=0, sticky="w", padx=(8, 4), pady=3
+                row=10 + row_i, column=0, sticky="w", padx=(8, 4), pady=3
             )
             ttk.Entry(outer, textvariable=var, width=42).grid(
-                row=9 + row_i, column=1, sticky="w", pady=3
+                row=10 + row_i, column=1, sticky="w", pady=3
             )
 
         # ── Section: Options ─────────────────────────────────────────────────────
         ttk.Separator(outer, orient="horizontal").grid(
-            row=12, column=0, columnspan=2, sticky="ew", pady=8
+            row=13, column=0, columnspan=2, sticky="ew", pady=8
         )
         self._backup_var = tk.BooleanVar(
             value=self._config.get("backup_enabled", True)
@@ -193,11 +201,11 @@ class SettingsDialog(tk.Toplevel):
             outer,
             text="Create a daily backup of the database before each save",
             variable=self._backup_var,
-        ).grid(row=13, column=0, columnspan=2, sticky="w", padx=4, pady=4)
+        ).grid(row=14, column=0, columnspan=2, sticky="w", padx=4, pady=4)
 
         # ── Buttons ──────────────────────────────────────────────────────────────
         btn_frame = ttk.Frame(outer)
-        btn_frame.grid(row=14, column=0, columnspan=2, pady=(16, 0))
+        btn_frame.grid(row=15, column=0, columnspan=2, pady=(16, 0))
         ttk.Button(btn_frame, text="Save",   command=self._on_save,   width=12).pack(side="left", padx=6)
         ttk.Button(btn_frame, text="Cancel", command=self._on_cancel, width=10).pack(side="left", padx=6)
 
@@ -210,31 +218,49 @@ class SettingsDialog(tk.Toplevel):
 
     # ── Actions ───────────────────────────────────────────────────────────────────
 
-    def _browse_db(self):
+    def _create_new_db(self):
+        """
+        Let the user navigate to any folder and type a name for a brand-new
+        database file.  Uses a Save-As dialog so the filename field is always
+        visible and editable — even in an empty folder.
+        """
+        path = filedialog.asksaveasfilename(
+            title="Create a new WorkLog database — choose a folder and file name",
+            filetypes=[("SQLite database", "*.db"), ("All files", "*.*")],
+            defaultextension=".db",
+            initialfile="worklog.db",
+        )
+        if not path:
+            return  # User cancelled
+        # The file doesn't exist yet — that's fine, the app creates it on connect
+        self._db_var.set(path)
+        log.debug("New DB path set: %s", path)
+        messagebox.showinfo(
+            "Database Will Be Created",
+            f"WorkLog will create a new database at:\n\n{path}\n\n"
+            "Click Save in Settings to confirm.",
+            parent=self,
+        )
+
+    def _open_existing_db(self):
+        """
+        Browse for a WorkLog database that already exists on disk.
+        """
         path = filedialog.askopenfilename(
-            title="Select WorkLog database file",
+            title="Open an existing WorkLog database",
             filetypes=[("SQLite database", "*.db"), ("All files", "*.*")],
         )
         if not path:
             return  # User cancelled
-
-        if os.path.isfile(path):
-            # Existing file selected — use it directly
-            self._db_var.set(path)
-            log.debug("DB path chosen (existing): %s", path)
-        else:
-            # User typed a name that doesn't exist yet
-            answer = messagebox.askyesno(
-                "Database Not Found",
-                f"No database file was found at:\n{path}\n\n"
-                "Would you like to create a new database here?\n\n"
-                "Click No to browse a different folder.",
+        if not os.path.isfile(path):
+            messagebox.showwarning(
+                "File Not Found",
+                f"Could not find a file at:\n{path}",
                 parent=self,
             )
-            if answer:
-                self._db_var.set(path)
-                log.debug("DB path chosen (new): %s", path)
-            # If No: dialog closes, Browse button is still available to try again
+            return
+        self._db_var.set(path)
+        log.debug("Existing DB path set: %s", path)
 
     def _browse_html(self):
         path = filedialog.asksaveasfilename(
