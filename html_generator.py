@@ -315,25 +315,36 @@ def generate_html(
     try:
         html_content = _build_html(entries, author_name, author_team, author_org)
 
-        # Write to a temporary file first
+        # Ensure the output directory exists (creates it if missing)
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        # Try atomic write first (temp file + rename)
+        # Falls back to direct write if the rename fails (e.g. file open in browser on Windows)
         tmp_path = output_path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(html_content)
+            os.replace(tmp_path, output_path)
+            log.info("HTML report written (atomic).")
+        except OSError:
+            # Fallback: write directly to the output file
+            log.warning("Atomic write failed; writing directly to %s", output_path)
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(html_content)
+            # Clean up temp file if it exists
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            log.info("HTML report written (direct).")
 
-        # Atomic rename — on the same filesystem this is instant
-        os.replace(tmp_path, output_path)
-
-        log.info("HTML report written successfully.")
         return True
 
     except OSError as exc:
         log.error("Failed to write HTML report: %s", exc)
-        # Clean up the temp file if it exists
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except OSError:
-            pass
         return False
 
 
