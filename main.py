@@ -214,11 +214,18 @@ class WorkLogApp(tk.Tk):
 
         # Save button
         sf = ttk.Frame(parent)
-        sf.pack(fill="x", padx=16, pady=(0, 14))
+        sf.pack(fill="x", padx=16, pady=(0, 6))
         self._save_btn = ttk.Button(sf, text="\U0001f4be  Save Entry",
                                     command=self._on_save,
                                     style="Accent.TButton", state="disabled")
         self._save_btn.pack(side="right")
+
+        # Status bar — shows result of last save operation
+        self._status_var = tk.StringVar(value="")
+        self._status_label = ttk.Label(
+            parent, textvariable=self._status_var,
+            font=("", 9), foreground="#555")
+        self._status_label.pack(fill="x", padx=16, pady=(0, 10))
 
     # ── Startup / DB connection ───────────────────────────────────────────────
 
@@ -373,7 +380,8 @@ class WorkLogApp(tk.Tk):
         self._save_btn.config(state="disabled")
         self._update_total()
         self._refresh_date_list()
-        self._regenerate_html()
+        self._regenerate_html()  # Silent on delete — no entry to confirm saved
+        self._set_status("\u2713 Entry deleted \u2014 HTML report updated.", color="#2a7a2a")
 
     # ── Work-item row editing ─────────────────────────────────────────────────
 
@@ -512,23 +520,40 @@ class WorkLogApp(tk.Tk):
         self._unsaved_changes = False
         self._unsaved_label.pack_forget()
         self._refresh_date_list()
-        self._regenerate_html()
-        log.info("Entry saved: id=%d", self._current_entry_id)
+        html_ok, html_msg = self._regenerate_html()
+        if html_ok:
+            self._set_status(f"\u2713 Entry saved \u2014 HTML report updated.", color="#2a7a2a")
+        else:
+            self._set_status(f"\u2713 Entry saved \u2014 HTML: {html_msg}", color="#b05000")
+        log.info("Entry saved: id=%d  html=%s", self._current_entry_id, html_msg)
 
     def _regenerate_html(self):
+        """Regenerate the HTML report. Returns (success: bool, message: str)."""
         if not self._db:
-            return
+            return False, "no database"
         html_path = self._config.get("html_path", "").strip()
         if not html_path:
-            return
+            return False, "HTML path not set — configure it in Settings"
         try:
             entries = self._db.get_all_entries_with_items()
-            generate_html(entries, html_path,
-                          author_name=self._config.get("author_name", ""),
-                          author_team=self._config.get("author_team", ""),
-                          author_org=self._config.get("author_org", ""))
+            ok = generate_html(entries, html_path,
+                               author_name=self._config.get("author_name", ""),
+                               author_team=self._config.get("author_team", ""),
+                               author_org=self._config.get("author_org", ""))
+            if ok:
+                return True, html_path
+            else:
+                return False, "write failed — check logs/worklog.log"
         except Exception as exc:
             log.error("HTML generation failed: %s", exc)
+            return False, str(exc)
+
+    def _set_status(self, message: str, color: str = "#555", timeout_ms: int = 6000):
+        """Show a temporary status message below the Save button."""
+        self._status_var.set(message)
+        self._status_label.configure(foreground=color)
+        # Clear after timeout_ms so it doesn't linger forever
+        self.after(timeout_ms, lambda: self._status_var.set(""))
 
     def _open_html_in_browser(self):
         html_path = self._config.get("html_path", "").strip()
