@@ -102,6 +102,7 @@ class Database:
         self._conn: Optional[sqlite3.Connection] = None
         log.info("Opening database: %s", db_path)
         self._connect()
+        self._cleanup_wal_files()
         self._initialize_schema()
 
     # ── Internal helpers ────────────────────────────────────────────────────────
@@ -115,14 +116,37 @@ class Database:
         )
         self._conn.row_factory = sqlite3.Row  # Rows accessible by column name
 
-        # WAL mode: reduces the chance of a "database is locked" error on network
-        # drives and allows one writer + many readers concurrently.
-        self._conn.execute("PRAGMA journal_mode=WAL;")
+        # Use DELETE journal mode (SQLite default) — most compatible with
+        # network drives. WAL mode requires file locking support that many
+        # SMB/CIFS shares do not provide reliably, causing "locking protocol"
+        # errors. DELETE mode works correctly on all network filesystems.
+        self._conn.execute("PRAGMA journal_mode=DELETE;")
 
         # Enforce ON DELETE CASCADE and other FK constraints.
         self._conn.execute("PRAGMA foreign_keys=ON;")
+
+        # Increase busy timeout — on a network drive, another process or the
+        # OS itself may briefly hold a lock. Wait up to 15 seconds before
+        # giving up with "database is locked".
+        self._conn.execute("PRAGMA busy_timeout=15000;")
+
         self._conn.commit()
-        log.debug("SQLite opened in WAL mode with FK enforcement.")
+        log.debug("SQLite opened (DELETE journal mode, 15s busy timeout).")
+
+    def _cleanup_wal_files(self):
+        """
+        Remove stale WAL/SHM sidecar files left by a previous WAL-mode session.
+        These cause locking errors if the journal mode is now DELETE.
+        Safe to call on any database — does nothing if the files don't exist.
+        """
+        for suffix in ("-wal", "-shm"):
+            path = self.db_path + suffix
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                    log.info("Removed stale WAL sidecar file: %s", path)
+                except OSError as exc:
+                    log.warning("Could not remove %s: %s", path, exc)
 
     def _initialize_schema(self):
         """Create tables and seed metadata on first run."""
