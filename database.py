@@ -21,6 +21,7 @@ Schema summary
 import os
 import shutil
 import sqlite3
+import time
 from datetime import datetime, date
 from typing import List, Optional
 
@@ -172,6 +173,33 @@ class Database:
         self._conn.commit()
         log.debug("Schema initialization complete.")
 
+    def _write_with_retry(self, fn, max_attempts: int = 4, base_delay: float = 0.5):
+        """
+        Call fn() (a zero-argument callable that performs SQLite writes).
+        On transient OperationalError (disk I/O error, locking protocol) the
+        call is retried up to max_attempts times with exponential back-off
+        (0.5 s, 1 s, 2 s, 4 s).  Non-transient errors are re-raised immediately.
+        """
+        _TRANSIENT = ("i/o error", "disk i/o", "locking protocol", "unable to open")
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_attempts):
+            try:
+                return fn()
+            except sqlite3.OperationalError as exc:
+                msg = str(exc).lower()
+                if any(k in msg for k in _TRANSIENT):
+                    last_exc = exc
+                    delay = base_delay * (2 ** attempt)
+                    log.warning(
+                        "Transient DB error (attempt %d/%d): %s — retrying in %.1f s",
+                        attempt + 1, max_attempts, exc, delay,
+                    )
+                    time.sleep(delay)
+                else:
+                    raise  # Non-transient — fail immediately
+        log.error("All %d write attempts failed: %s", max_attempts, last_exc)
+        raise last_exc  # type: ignore[misc]
+
     # ── Connection management ────────────────────────────────────────────────────
 
     def close(self):
@@ -285,12 +313,14 @@ class Database:
         return entry_id
 
     def update_entry_notes(self, entry_id: int, notes: str):
-        """Update the daily note and bump updated_at."""
-        self._conn.execute(
-            "UPDATE daily_entries SET notes = ?, updated_at = ? WHERE id = ?",
-            (notes, _now(), entry_id),
-        )
-        self._conn.commit()
+        """Update the daily note and bump updated_at (retries on transient I/O errors)."""
+        def _do():
+            self._conn.execute(
+                "UPDATE daily_entries SET notes = ?, updated_at = ? WHERE id = ?",
+                (notes, _now(), entry_id),
+            )
+            self._conn.commit()
+        self._write_with_retry(_do)
 
     def delete_entry(self, entry_id: int):
         """
@@ -323,7 +353,8 @@ class Database:
         operation is rolled back and the database is unchanged.
         """
         now = _now()
-        try:
+
+        def _do():
             with self._conn:  # auto-COMMIT on exit, auto-ROLLBACK on exception
                 # Delete all existing rows for this entry
                 self._conn.execute(
@@ -350,6 +381,9 @@ class Database:
                     "UPDATE daily_entries SET updated_at = ? WHERE id = ?",
                     (now, entry_id),
                 )
+
+        try:
+            self._write_with_retry(_do)
             log.info("Saved %d work item(s) for entry_id=%d", len(items), entry_id)
         except sqlite3.Error as exc:
             log.error("Failed to save work items for entry_id=%d: %s", entry_id, exc)
