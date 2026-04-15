@@ -117,14 +117,21 @@ class Database:
         )
         self._conn.row_factory = sqlite3.Row  # Rows accessible by column name
 
-        # Use DELETE journal mode (SQLite default) — most compatible with
-        # network drives. WAL mode requires file locking support that many
-        # SMB/CIFS shares do not provide reliably, causing "locking protocol"
-        # errors. DELETE mode works correctly on all network filesystems.
-        self._conn.execute("PRAGMA journal_mode=DELETE;")
+        # Use MEMORY journal mode — keeps the journal in RAM instead of writing
+        # a .db-journal temp file to disk.  On SMB/network drives, creating new
+        # files can be blocked even when modifying existing files works fine.
+        # MEMORY mode avoids that entirely: the only disk write is the in-place
+        # update of the .db file itself, which the network share allows.
+        # Trade-off: if the process is killed mid-write there is no journal to
+        # recover from, but daily backups cover that risk.
+        self._conn.execute("PRAGMA journal_mode=MEMORY;")
 
         # Enforce ON DELETE CASCADE and other FK constraints.
         self._conn.execute("PRAGMA foreign_keys=ON;")
+
+        # Reduce fsync pressure — NORMAL syncs at the most critical points only.
+        # On a network drive, aggressive fsyncs can trigger I/O errors.
+        self._conn.execute("PRAGMA synchronous=NORMAL;")
 
         # Increase busy timeout — on a network drive, another process or the
         # OS itself may briefly hold a lock. Wait up to 15 seconds before
@@ -132,7 +139,7 @@ class Database:
         self._conn.execute("PRAGMA busy_timeout=15000;")
 
         self._conn.commit()
-        log.debug("SQLite opened (DELETE journal mode, 15s busy timeout).")
+        log.debug("SQLite opened (MEMORY journal mode, synchronous=NORMAL, 15s busy timeout).")
 
     def _cleanup_wal_files(self):
         """
@@ -301,14 +308,20 @@ class Database:
         Returns the new row ID.
         """
         now = _now()
-        cur = self._conn.cursor()
-        cur.execute(
-            "INSERT INTO daily_entries (entry_date, notes, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?)",
-            (entry_date, notes, now, now),
-        )
-        self._conn.commit()
-        entry_id = cur.lastrowid
+        entry_id_holder: list = []
+
+        def _do():
+            cur = self._conn.cursor()
+            cur.execute(
+                "INSERT INTO daily_entries (entry_date, notes, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                (entry_date, notes, now, now),
+            )
+            self._conn.commit()
+            entry_id_holder.append(cur.lastrowid)
+
+        self._write_with_retry(_do)
+        entry_id = entry_id_holder[0]
         log.info("Created entry id=%d date=%s", entry_id, entry_date)
         return entry_id
 
