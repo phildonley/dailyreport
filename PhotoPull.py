@@ -133,6 +133,7 @@ class PhotoPullApp:
         self.columns = []
         self.data_rows = []
         self.stop_flag = False
+        self._last_report_path = None
 
         self._load_settings()
         self._build_ui()
@@ -254,8 +255,10 @@ class PhotoPullApp:
         cp.pack(fill=tk.X, pady=(0, 8))
 
         for label_text, attr, hint in [
-            ("Part Number / Key Column:", "key_col", "Your product ID, SKU, or part number"),
-            ("Image URL Column:", "img_col", "The column containing image paths or partial URLs"),
+            ("Part Number / Key Column:", "key_col",
+             "Optional — appears in the download report so you can trace errors by part number"),
+            ("Image URL Column:", "img_col",
+             "Required — the column containing image paths or partial URLs"),
         ]:
             r = ttk.Frame(cp)
             r.pack(fill=tk.X, pady=3)
@@ -378,6 +381,29 @@ class PhotoPullApp:
             foreground="gray", wraplength=860,
         ).pack(anchor=tk.W, pady=(0, 8))
 
+        # ── Run Options ───────────────────────────────────────────────────────
+        ro = ttk.LabelFrame(f, text="Run Options", padding=10)
+        ro.pack(fill=tk.X, pady=(0, 8))
+
+        opt_row = ttk.Frame(ro)
+        opt_row.pack(fill=tk.X)
+        self.test_run_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            opt_row,
+            text="Test run — process only the first",
+            variable=self.test_run_var,
+        ).pack(side=tk.LEFT)
+        self.test_limit_var = tk.IntVar(value=10)
+        ttk.Spinbox(
+            opt_row, from_=1, to=9999,
+            textvariable=self.test_limit_var, width=6,
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Label(
+            opt_row,
+            text="rows   (verify your settings before committing to a full run)",
+            foreground="gray",
+        ).pack(side=tk.LEFT)
+
         # ── Summary ───────────────────────────────────────────────────────────
         sf = ttk.LabelFrame(f, text="Summary", padding=10)
         sf.pack(fill=tk.X, pady=(0, 8))
@@ -411,6 +437,10 @@ class PhotoPullApp:
             bf, text="Open Output Folder", command=self._open_folder, state=tk.DISABLED
         )
         self.open_btn.pack(side=tk.RIGHT, padx=2)
+        self.report_btn = ttk.Button(
+            bf, text="View Report", command=self._view_report, state=tk.DISABLED
+        )
+        self.report_btn.pack(side=tk.RIGHT, padx=2)
 
         # ── Activity log ──────────────────────────────────────────────────────
         lf = ttk.LabelFrame(f, text="Activity Log", padding=5)
@@ -574,10 +604,9 @@ class PhotoPullApp:
         if not self.data_rows:
             self.summary_lbl.config(text="No data loaded.")
             return
-        key = self.key_col_var.get()
         img = self.img_col_var.get()
-        if not key or not img or key not in self.columns or img not in self.columns:
-            self.summary_lbl.config(text="Select key and image columns in Step 1.")
+        if not img or img not in self.columns:
+            self.summary_lbl.config(text="Select the image URL column in Step 1.")
             return
         idx = self.columns.index(img)
         sep = self.sep_var.get() or "|"
@@ -603,17 +632,16 @@ class PhotoPullApp:
     def _start(self):
         self._collect_settings_from_ui()
 
-        key = self.settings.get("key_column")
         img = self.settings.get("image_column")
 
         if not self.data_rows:
             messagebox.showwarning("No Data", "Load a file in Step 1 first.")
             return
-        if not key or not img:
-            messagebox.showwarning("Columns Missing", "Select the key and image columns in Step 1.")
+        if not img:
+            messagebox.showwarning("Column Missing", "Select the Image URL column in Step 1.")
             return
-        if key not in self.columns or img not in self.columns:
-            messagebox.showwarning("Column Error", "Selected columns not found in the loaded file.")
+        if img not in self.columns:
+            messagebox.showwarning("Column Error", "Selected image column not found in the loaded file.")
             return
         out = self.settings.get("output_folder", "").strip()
         if not out:
@@ -629,6 +657,9 @@ class PhotoPullApp:
             messagebox.showerror("Folder Error", f"Cannot create output folder:\n{exc}")
             return
 
+        test_run   = self.test_run_var.get()
+        test_limit = max(1, self.test_limit_var.get())
+
         self._save_settings()
         self.nb.select(2)
         self._update_summary()
@@ -639,9 +670,13 @@ class PhotoPullApp:
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
         self.open_btn.config(state=tk.DISABLED)
+        self.report_btn.config(state=tk.DISABLED)
+        self._last_report_path = None
         self.stop_flag = False
 
-        threading.Thread(target=self._worker, daemon=True).start()
+        threading.Thread(
+            target=self._worker, args=(test_run, test_limit), daemon=True
+        ).start()
 
     def _stop(self):
         self.stop_flag = True
@@ -664,43 +699,54 @@ class PhotoPullApp:
 
     # ── Download worker ───────────────────────────────────────────────────────
 
-    def _worker(self):
-        key_col = self.settings["key_column"]
+    def _worker(self, test_run=False, test_limit=10):
+        key_col = self.settings.get("key_column", "")
         img_col = self.settings["image_column"]
         out     = self.settings["output_folder"]
         sep     = self.settings.get("separator", "|")
         rules   = self.settings.get("url_patterns", [])
 
-        ki = self.columns.index(key_col)
+        ki = self.columns.index(key_col) if key_col and key_col in self.columns else None
         ii = self.columns.index(img_col)
 
+        source_rows = self.data_rows[:test_limit] if test_run else self.data_rows
+
+        if test_run:
+            self.root.after(0, lambda n=test_limit: self._log(
+                f"[TEST] Running on first {n} rows only."
+            ))
+
         # Build the full job list up front so we know the total
+        # Each job: (key_val, raw_part, full_url)
         jobs = []
-        for row in self.data_rows:
+        for row_num, row in enumerate(source_rows, 1):
             cell = str(row[ii]) if row[ii] is not None else ""
             if not cell.strip():
                 continue
-            key_val = str(row[ki]) if row[ki] is not None else "unknown"
+            if ki is not None:
+                key_val = str(row[ki]) if row[ki] is not None else "unknown"
+            else:
+                key_val = f"Row {row_num}"
             for part in cell.split(sep):
                 part = part.strip()
                 if part:
-                    jobs.append((key_val, self._apply_rules(part, rules)))
+                    jobs.append((key_val, part, self._apply_rules(part, rules)))
 
         total = len(jobs)
         if total == 0:
-            self.root.after(0, lambda: self._done(0, 0, 0, False))
+            self.root.after(0, lambda: self._done([], False))
             return
 
         self.root.after(0, lambda t=total: self.prog_bar.config(maximum=t, value=0))
 
         downloaded = skipped = errors = 0
         seen_files = set()
+        results = []
 
-        for idx, (key_val, url) in enumerate(jobs, 1):
+        for idx, (key_val, raw_part, url) in enumerate(jobs, 1):
             if self.stop_flag:
                 self.root.after(
-                    0, lambda d=downloaded, s=skipped, e=errors:
-                    self._done(d, s, e, True)
+                    0, lambda r=results: self._done(r, True)
                 )
                 return
 
@@ -708,6 +754,11 @@ class PhotoPullApp:
             if not url.startswith(("http://", "https://")):
                 msg = f"[SKIP] Not a valid URL: {url}"
                 self.root.after(0, lambda m=msg: self._log(m))
+                results.append({
+                    "key": key_val, "original": raw_part, "url": url,
+                    "filename": "", "status": "Invalid URL",
+                    "note": "Did not match any replacement rule",
+                })
                 skipped += 1
                 self.root.after(0, lambda v=idx, t=total: self._tick(v, t))
                 continue
@@ -725,18 +776,31 @@ class PhotoPullApp:
             if os.path.exists(dest):
                 msg = f"[SKIP] Already exists: {fname}"
                 self.root.after(0, lambda m=msg: self._log(m))
+                results.append({
+                    "key": key_val, "original": raw_part, "url": url,
+                    "filename": fname, "status": "Skipped",
+                    "note": "File already exists in output folder",
+                })
                 skipped += 1
             else:
-                if self._fetch(url, dest):
+                ok, note = self._fetch(url, dest)
+                if ok:
                     downloaded += 1
+                    results.append({
+                        "key": key_val, "original": raw_part, "url": url,
+                        "filename": fname, "status": "Downloaded", "note": "",
+                    })
                 else:
                     errors += 1
+                    results.append({
+                        "key": key_val, "original": raw_part, "url": url,
+                        "filename": fname, "status": "Error", "note": note,
+                    })
 
             self.root.after(0, lambda v=idx, t=total: self._tick(v, t))
 
         self.root.after(
-            0, lambda d=downloaded, s=skipped, e=errors:
-            self._done(d, s, e, False)
+            0, lambda r=results: self._done(r, False)
         )
 
     @staticmethod
@@ -762,8 +826,18 @@ class PhotoPullApp:
         fname = url.split("?")[0].rstrip("/").split("/")[-1]
         return fname or "image.jpg"
 
+    @staticmethod
+    def _cleanup(path):
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
     def _fetch(self, url, dest):
+        """Download url to dest.  Returns (success, error_message)."""
         self.root.after(0, lambda: self._log(f"[DOWN] {url}"))
+        error = ""
         try:
             resp = requests.get(url, timeout=30, stream=True)
             resp.raise_for_status()
@@ -775,30 +849,25 @@ class PhotoPullApp:
                         break
                     fh.write(chunk)
             if interrupted:
-                if os.path.exists(dest):
-                    try:
-                        os.remove(dest)
-                    except OSError:
-                        pass
-                return False
+                self._cleanup(dest)
+                return False, "Interrupted by user"
             fname = os.path.basename(dest)
             self.root.after(0, lambda fn=fname: self._log(f"[ OK ] Saved: {fn}"))
-            return True
+            return True, ""
         except requests.exceptions.HTTPError as exc:
-            self.root.after(0, lambda m=str(exc): self._log(f"[ERR] HTTP {m}"))
+            error = f"HTTP error: {exc}"
+            self.root.after(0, lambda m=error: self._log(f"[ERR] {m}"))
         except requests.exceptions.ConnectionError:
+            error = "Connection failed"
             self.root.after(0, lambda u=url: self._log(f"[ERR] Connection failed: {u}"))
         except requests.exceptions.Timeout:
+            error = "Request timed out"
             self.root.after(0, lambda u=url: self._log(f"[ERR] Timeout: {u}"))
         except OSError as exc:
+            error = f"File write error: {exc}"
             self.root.after(0, lambda m=str(exc): self._log(f"[ERR] File write: {m}"))
-        # Clean up any partial file after an exception
-        if os.path.exists(dest):
-            try:
-                os.remove(dest)
-            except OSError:
-                pass
-        return False
+        self._cleanup(dest)
+        return False, error
 
     def _tick(self, value, total):
         self.prog_bar["value"] = value
@@ -806,11 +875,16 @@ class PhotoPullApp:
         self.prog_count.config(text=text)
         self.prog_lbl.config(text=f"Downloading…  ({text})")
 
-    def _done(self, downloaded, skipped, errors, stopped):
+    def _done(self, results, stopped):
         self.stop_flag = False
         self.start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
         self.open_btn.config(state=tk.NORMAL)
+
+        downloaded = sum(1 for r in results if r["status"] == "Downloaded")
+        skipped    = sum(1 for r in results if r["status"] in ("Skipped", "Invalid URL"))
+        errors     = sum(1 for r in results if r["status"] == "Error")
+
         verb = "Stopped" if stopped else "Complete"
         self.prog_lbl.config(
             text=f"{verb} — Downloaded: {downloaded}  |  Skipped: {skipped}  |  Errors: {errors}"
@@ -819,6 +893,96 @@ class PhotoPullApp:
         self._log(f"{verb}!   Downloaded: {downloaded}   Skipped: {skipped}   Errors: {errors}")
         if not stopped:
             self._log(f"Output folder: {self.settings.get('output_folder', '')}")
+
+        if results:
+            report_path = self._save_report(results)
+            if report_path:
+                self._last_report_path = report_path
+                self.report_btn.config(state=tk.NORMAL)
+                self._log(f"Report saved: {os.path.basename(report_path)}")
+
+        if not stopped and results:
+            self._show_summary_popup(downloaded, skipped, errors, results)
+
+    # ── Report helpers ────────────────────────────────────────────────────────
+
+    def _save_report(self, results):
+        """Write a CSV report to the output folder.  Returns the file path or None."""
+        import datetime
+        out = self.settings.get("output_folder", "")
+        if not out:
+            return None
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(out, f"photopull_report_{timestamp}.csv")
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(
+                    fh,
+                    fieldnames=["key", "original", "url", "filename", "status", "note"],
+                )
+                writer.writeheader()
+                writer.writerows(results)
+            return path
+        except Exception as exc:
+            self._log(f"[WARN] Could not save report: {exc}")
+            return None
+
+    def _view_report(self):
+        if not self._last_report_path or not os.path.exists(self._last_report_path):
+            messagebox.showwarning("Report", "No report file found.")
+            return
+        try:
+            if platform.system() == "Windows":
+                os.startfile(self._last_report_path)
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", self._last_report_path])
+            else:
+                subprocess.Popen(["xdg-open", self._last_report_path])
+        except Exception as exc:
+            messagebox.showwarning("View Report", str(exc))
+
+    def _show_summary_popup(self, downloaded, skipped, errors, results):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Download Complete — Summary")
+        dlg.geometry("480x320")
+        dlg.resizable(True, True)
+        dlg.transient(self.root)
+
+        total = len(results)
+        pct = f"{downloaded / total * 100:.1f}%" if total else "—"
+
+        ttk.Label(dlg, text="Download Summary", font=("Helvetica", 13, "bold")).pack(pady=(14, 4))
+
+        grid = ttk.Frame(dlg, padding=10)
+        grid.pack(fill=tk.X)
+        for row_idx, (label, value, color) in enumerate([
+            ("Total images processed:", str(total),       ""),
+            ("Successfully downloaded:", str(downloaded), "green" if downloaded else ""),
+            ("Skipped (already existed / invalid):", str(skipped), ""),
+            ("Errors:", str(errors), "red" if errors else ""),
+            ("Success rate:", pct, ""),
+        ]):
+            ttk.Label(grid, text=label, anchor=tk.W).grid(row=row_idx, column=0, sticky=tk.W, padx=6, pady=2)
+            lbl = ttk.Label(grid, text=value, anchor=tk.W, font=("Helvetica", 10, "bold"))
+            lbl.grid(row=row_idx, column=1, sticky=tk.W, padx=6, pady=2)
+            if color:
+                lbl.configure(foreground=color)
+
+        if errors:
+            ttk.Separator(dlg).pack(fill=tk.X, padx=10, pady=4)
+            ttk.Label(dlg, text="Failed images:", anchor=tk.W).pack(anchor=tk.W, padx=12)
+            err_box = scrolledtext.ScrolledText(
+                dlg, height=6, state=tk.NORMAL, font=("Courier", 8), wrap=tk.WORD
+            )
+            err_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 6))
+            for r in results:
+                if r["status"] == "Error":
+                    err_box.insert(tk.END, f"{r['key']}  →  {r['filename'] or r['original']}\n")
+                    if r["note"]:
+                        err_box.insert(tk.END, f"   {r['note']}\n")
+            err_box.config(state=tk.DISABLED)
+
+        ttk.Button(dlg, text="Close", command=dlg.destroy).pack(pady=8)
 
     # ── Log helpers ───────────────────────────────────────────────────────────
 
